@@ -1,8 +1,12 @@
 FROM python:3.6.3
-MAINTAINER Meng Lee "b98705001@gmail.com"
 COPY ./requirements.txt /app/requirements.txt
 WORKDIR /app
 RUN pip install -r requirements.txt
+# Generate usernames
+RUN for i in $(seq 10000 10999); do \
+  echo "user$i:x:$i:$i::/tmp:/usr/sbin/nologin" >> /etc/passwd; \
+  done
 COPY . /app
-ENTRYPOINT [ "python3" ]
+RUN chmod -R 777 datasets static images models templates
+ENTRYPOINT ["python3" ]
 CMD ["app.py"]

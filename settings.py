@@ -2,7 +2,7 @@ import os
 PROJECT_PATH = os.path.dirname(os.path.abspath(__file__))
 
 # deploy application
-IS_DEBUG = True
+IS_DEBUG = False
 
 
 # trained model

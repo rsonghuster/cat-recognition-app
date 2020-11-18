@@ -1,0 +1,45 @@
+ROSTemplateFormatVersion: "2015-09-01"
+Transform: "Aliyun::Serverless-2018-04-03"
+Resources:
+  classify:
+    Type: "Aliyun::Serverless::Service"
+    Properties:
+      Policies:
+        - AliyunContainerRegistryReadOnlyAccess
+        - AliyunOSSFullAccess
+      InternetAccess: true
+      # LogConfig: Auto
+    cat-dog:
+      Type: "Aliyun::Serverless::Function"
+      Properties:
+        Description: "cat-dog-recognition example with custom container"
+        Runtime: custom-container
+        Handler: not-used-handler
+        Timeout: 60
+        CAPort: 9000
+        Initializer: not-used-init
+        InitializationTimeout: 300
+        MemorySize: 1536
+        CodeUri: ./ # Root directory for the function or the Dockerfile path
+        CustomContainerConfig:
+          Image: "registry-vpc.cn-hangzhou.aliyuncs.com/rsong/cat-recognition-app:v17"
+          Command: ""
+          Args: ""
+        EnvironmentVariables:
+          OSS_BUCKET_NAME: cat-dog-recognition
+      Events:
+        http-trigger:
+          Type: HTTP
+          Properties:
+            AuthType: ANONYMOUS
+            Methods: ["GET", "POST", "PUT", "DELETE", "HEAD"]
+  my_domain:
+    Type: "Aliyun::Serverless::CustomDomain"
+    Properties:
+      DomainName: Auto # you can use your domain, https://help.aliyun.com/document_detail/90759.html
+      Protocol: HTTP
+      RouteConfig:
+        Routes:
+          "/*":
+            ServiceName: classify
+            FunctionName: cat-dog

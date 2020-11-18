@@ -1,6 +1,7 @@
-import os
+import os, time
 import glob
 import json
+import oss2
 from flask import Flask, flash, request, json,\
         render_template, redirect, url_for, send_from_directory
 from werkzeug.utils import secure_filename
@@ -9,14 +10,21 @@ from settings import UPLOAD_FOLDER, TEST_DIR, \
         ALLOWED_EXTENSIONS, IMAGE_INFO_JSON, IS_DEBUG
 from predict import Predictor
 from shutil import copyfile
+from fc_context import FC_CONTEXT
 
-# AWS settings, ignore this part if test locally
-try:
-    from aws_settings import S3_BUCKET_NAME, S3_BUCKET_BASE_URL,\
-        AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-    SAVE_INFO_ON_AWS = True
-except ImportError:
-    SAVE_INFO_ON_AWS = False
+# bucket = None
+# # Alibaba Cloud settings, ignore this part if test locally
+# try:
+#     from aliyun_settings import OSS_ENDPOINT, OSS_BUCKET_NAME, \
+#         OSS_ACCESS_KEY_ID, OSS_SECRET_ACCESS_KEY
+#     SAVE_INFO_ON_OSS = True
+#     auth = oss2.Auth(OSS_ACCESS_KEY_ID, OSS_SECRET_ACCESS_KEY)
+#     bucket = oss2.Bucket(auth, OSS_ENDPOINT, OSS_BUCKET_NAME)
+# except ImportError:
+#     SAVE_INFO_ON_OSS = False
+
+SAVE_INFO_ON_OSS = True
+INIT_IMAGE_INFO_DONE = False
 
 app = Flask(__name__)
 bootstrap = Bootstrap(app)
@@ -29,48 +37,65 @@ predictor = Predictor()
 # used for rendering after feedback
 CURRENT_IMAGE_INFO = os.path.join(UPLOAD_FOLDER, 'current_image_info.json')
 
+def update_fc_context():
+    # update FC_CONTEXT
+    FC_CONTEXT.access_key_id = request.headers.get('x-fc-access-key-id')
+    FC_CONTEXT.access_key_secret = request.headers.get('x-fc-access-key-secret')
+    FC_CONTEXT.security_token = request.headers.get('x-fc-security-token')
+    FC_CONTEXT.region = request.headers.get('x-fc-region')
+    FC_CONTEXT.account_id = request.headers.get('x-fc-account-id')
 
 def init_image_info():
-    """Init settings.IMAGE_INFO_JSON using file stored on S3 for
+    """Init settings.IMAGE_INFO_JSON using file stored on OSS for
     warm start.
     """
+    update_fc_context()
+
     if not os.path.exists(UPLOAD_FOLDER):
         os.makedirs(UPLOAD_FOLDER)
 
-    if SAVE_INFO_ON_AWS:
-        client = boto3.client('s3',
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-        )
+    global INIT_IMAGE_INFO_DONE
+    if INIT_IMAGE_INFO_DONE:
+        print("init_image_info is already done!")
+        return
 
+    if SAVE_INFO_ON_OSS:
+        json_info_key = IMAGE_INFO_JSON.replace(app.config['UPLOAD_FOLDER'], '').replace('/', '')
         try:
-            res = client.get_object(
-                Bucket=S3_BUCKET_NAME,
-                Key=IMAGE_INFO_JSON\
-                .replace(app.config['UPLOAD_FOLDER'], '').replace('/', '')
-            )
-            image_info = json.loads(res['Body'].read().decode('utf-8'))
+            auth = oss2.StsAuth(FC_CONTEXT.access_key_id, FC_CONTEXT.access_key_secret, FC_CONTEXT.security_token)
+            bucket = oss2.Bucket(auth, "http://oss-{}-internal.aliyuncs.com".format(FC_CONTEXT.region), os.environ['OSS_BUCKET_NAME'])
+            for obj in oss2.ObjectIterator(bucket):
+                if obj.key == json_info_key:
+                    res = bucket.get_object(json_info_key)
+                    image_info = json.loads(res.read().decode('utf-8'))
+                    print("init_image_info, from oss get: {0}".format(image_info))
 
-            # merge local result
-            if os.path.exists(IMAGE_INFO_JSON):
-                with open(IMAGE_INFO_JSON, 'r') as f:
-                    local_info = json.load(f)
+                    # merge local result
+                    local_info = {}
+                    if os.path.exists(IMAGE_INFO_JSON):
+                        with open(IMAGE_INFO_JSON, 'r') as f:
+                            local_info = json.load(f)
 
-            for k, v in local_info.items():
-                if k not in image_info:
-                    image_info[k] = v
-                elif k in image_info and v.get('label', '') != 'unknown':
-                    image_info[k] = v
+                    for k, v in local_info.items():
+                        if k not in image_info:
+                            image_info[k] = v
+                        elif k in image_info and v.get('label', '') != 'unknown':
+                            image_info[k] = v
 
-
-            # initialize local image_info with S3 version
-            with open(IMAGE_INFO_JSON, 'w') as f:
-                json.dump(image_info, f, indent=4)
-
+                    # initialize local image_info
+                    with open(IMAGE_INFO_JSON, 'w') as f:
+                        json.dump(image_info, f, indent=4)
+                else: # merge oss pic to local
+                    if "/" not in obj.key and obj.key.endswith('jpg','png','jpeg','bmp'):
+                        file_name = os.path.join(app.config['UPLOAD_FOLDER'], obj.key)
+                        if not os.path.exists(file_name):
+                            bucket.get_object_to_file(obj.key, file_name)
         except:
-            # when there is no IMAGE_INFO_JSON on S3
+            # when there is no IMAGE_INFO_JSON on OSS
             # just initialize local file and upload later
-            pass
+            print("init_image_info: there is no IMAGE_INFO_JSON on OSS, key = {}".format(json_info_key))
+        finally:
+            INIT_IMAGE_INFO_DONE = True
 
 
 @app.route('/generate-gallery', methods=['GET'])
@@ -97,7 +122,6 @@ def generate_gallery():
 def make_prediction():
     """View that receive images and render predictions
     """
-
     if request.method == 'POST':
         # check if the post request has the file part
         if 'file' not in request.files:
@@ -155,6 +179,8 @@ def make_prediction():
 def save_user_feedback():
     """Save user feedback of current prediction"""
 
+    filename = ""
+    prob = None
     # get most recently prediction result
     if os.path.exists(CURRENT_IMAGE_INFO):
         with open(CURRENT_IMAGE_INFO, 'r') as f:
@@ -164,7 +190,7 @@ def save_user_feedback():
 
     label = request.form['label']
 
-    print('filename: {}, prob: {}'.format(filename, prob))
+    print('save_user_feedback, filename: {}, prob: {}'.format(filename, prob))
 
     init_image_info()
 
@@ -176,8 +202,8 @@ def save_user_feedback():
         with open(IMAGE_INFO_JSON, 'w') as f:
             json.dump(image_info, f, indent=4)
 
-        if SAVE_INFO_ON_AWS:
-            save_image_info_on_s3(image_info)
+        if SAVE_INFO_ON_OSS:
+            save_image_info_on_oss(image_info)
 
 
     # get information of gallery
@@ -199,6 +225,11 @@ def uploaded_file(filename):
     """generate url for user uploaded file"""
     return send_from_directory(app.config['UPLOAD_FOLDER'],
                                filename)
+
+@app.route('/initialize', methods=['POST'])
+def initialize():
+    print("just initialize to import app.py and all dependency")
+    return render_template('init.html')
 
 @app.errorhandler(404)
 def page_not_found(e):
@@ -300,7 +331,7 @@ def get_stat_of_recent_images(num_images=300):
 
 def save_image(file, filename):
     """Save current images to setting.UPLOAD_FOLDER and return the
-    corresponding file path. Also save the image to AWS S3 if aws information
+    corresponding file path. Also save the image to OSS if aws information
     is available.
 
     Parameters
@@ -324,25 +355,18 @@ def save_image(file, filename):
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     file.save(file_path)
 
-    # save image to S3
-    if SAVE_INFO_ON_AWS:
-        client = boto3.client('s3',
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-        )
-
+    # save image to OSS
+    if SAVE_INFO_ON_OSS:
         file.seek(0)
-        client.put_object(
-            Body=file.read(),
-            Bucket=S3_BUCKET_NAME,
-            Key=filename)
-
+        auth = oss2.StsAuth(FC_CONTEXT.access_key_id, FC_CONTEXT.access_key_secret, FC_CONTEXT.security_token)
+        bucket = oss2.Bucket(auth, "http://oss-{}-internal.aliyuncs.com".format(FC_CONTEXT.region), os.environ['OSS_BUCKET_NAME'])
+        bucket.put_object(filename, file.read())
     return file_path
 
 
 def save_image_info(filename, prob):
     """Save predicted result of the image in a json file locally.
-    Also save the json to AWS S3 if aws information is available.
+    Also save the json to OSS if aws information is available.
 
     Parameters
     ----------
@@ -364,44 +388,24 @@ def save_image_info(filename, prob):
     with open(IMAGE_INFO_JSON, 'w') as f:
         json.dump(image_info, f, indent=4)
 
-    # save image info to S3
-    if SAVE_INFO_ON_AWS:
-        save_image_info_on_s3(image_info)
+    # save image info to OSS
+    if SAVE_INFO_ON_OSS:
+        save_image_info_on_oss(image_info)
 
 
-def save_image_info_on_s3(image_info):
-    """Save the json file containing image info on S3
+def save_image_info_on_oss(image_info):
+    """Save the json file containing image info on OSS
 
     Parameters
     ----------
     image_info: dict
     """
-    client = boto3.client('s3',
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-    )
-    client.put_object(
-        Body=json.dumps(image_info, indent=4),
-        Bucket=S3_BUCKET_NAME,
-        Key=IMAGE_INFO_JSON\
-        .replace(app.config['UPLOAD_FOLDER'], '').replace('/', ''))
-
-
-def init_image_info():
-    """Init settings.IMAGE_INFO_JSON using file stored on S3 for
-    warm start.
-    """
-    if not os.path.exists(UPLOAD_FOLDER):
-        os.makedirs(UPLOAD_FOLDER)
-
-
-@app.errorhandler(404)
-def page_not_found(e):
-    return render_template('404.html'), 404
-
-
+    update_fc_context()
+    auth = oss2.StsAuth(FC_CONTEXT.access_key_id, FC_CONTEXT.access_key_secret, FC_CONTEXT.security_token)
+    bucket = oss2.Bucket(auth, "http://oss-{}-internal.aliyuncs.com".format(FC_CONTEXT.region), os.environ['OSS_BUCKET_NAME'])
+    bucket.put_object(IMAGE_INFO_JSON\
+        .replace(app.config['UPLOAD_FOLDER'], '').replace('/', ''), json.dumps(image_info, indent=4))
 
 if __name__ == '__main__':
-    pass
     # application.run(host='0.0.0.0', port=5602)
-    app.run(host='0.0.0.0', port=5000, debug=IS_DEBUG)
+    app.run(host='0.0.0.0', port=9000, debug=IS_DEBUG)
