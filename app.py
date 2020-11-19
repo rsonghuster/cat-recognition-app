@@ -1,16 +1,48 @@
-import os, time
+import os
 import glob
 import json
 import oss2
 from flask import Flask, flash, request, json,\
-        render_template, redirect, url_for, send_from_directory
+        render_template, redirect, send_from_directory
 from werkzeug.utils import secure_filename
 from flask_bootstrap import Bootstrap
-from settings import UPLOAD_FOLDER, TEST_DIR, \
-        ALLOWED_EXTENSIONS, IMAGE_INFO_JSON, IS_DEBUG
-from predict import Predictor
 from shutil import copyfile
+
+from settings import UPLOAD_FOLDER, TEST_DIR, \
+        ALLOWED_EXTENSIONS, IMAGE_INFO_JSON, IS_DEBUG, SAVE_INFO_ON_OSS
 from fc_context import FC_CONTEXT
+from predict import predict
+
+# start = time.time()
+# os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+# from keras.models import model_from_json
+# print("import keras time = ", time.time() - start)
+
+# model = None
+# # Getting model
+# with open('model/model.json', 'r') as f:
+#     model_content = f.read()
+#     model = model_from_json(model_content)
+#     # Getting weights
+#     model.load_weights("model/weights.h5")
+
+# graph = None
+# graph = tf.get_default_graph()
+
+# def predict(file_path):
+#     start = time.time()
+#     img_size = 64
+#     image = io.imread(file_path)
+#     img = imresize(image, (img_size, img_size, 3))
+
+#     X = np.zeros((1, 64, 64, 3), dtype='float64')
+#     X[0] = img
+
+#     global model, graph
+#     with graph.as_default():
+#         Y = model.predict(X)
+#         print("dog: {:.2}, cat: {:.2}; ".format(Y[0][1], Y[0][0]))
+#         return float(Y[0][0])
 
 # bucket = None
 # # Alibaba Cloud settings, ignore this part if test locally
@@ -23,7 +55,6 @@ from fc_context import FC_CONTEXT
 # except ImportError:
 #     SAVE_INFO_ON_OSS = False
 
-SAVE_INFO_ON_OSS = True
 INIT_IMAGE_INFO_DONE = False
 
 app = Flask(__name__)
@@ -32,18 +63,19 @@ bootstrap = Bootstrap(app)
 app.secret_key = 'some_secret'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-predictor = Predictor()
-
 # used for rendering after feedback
 CURRENT_IMAGE_INFO = os.path.join(UPLOAD_FOLDER, 'current_image_info.json')
+
 
 def update_fc_context():
     # update FC_CONTEXT
     FC_CONTEXT.access_key_id = request.headers.get('x-fc-access-key-id')
-    FC_CONTEXT.access_key_secret = request.headers.get('x-fc-access-key-secret')
+    FC_CONTEXT.access_key_secret = request.headers.get(
+        'x-fc-access-key-secret')
     FC_CONTEXT.security_token = request.headers.get('x-fc-security-token')
     FC_CONTEXT.region = request.headers.get('x-fc-region')
     FC_CONTEXT.account_id = request.headers.get('x-fc-account-id')
+
 
 def init_image_info():
     """Init settings.IMAGE_INFO_JSON using file stored on OSS for
@@ -60,15 +92,21 @@ def init_image_info():
         return
 
     if SAVE_INFO_ON_OSS:
-        json_info_key = IMAGE_INFO_JSON.replace(app.config['UPLOAD_FOLDER'], '').replace('/', '')
+        json_info_key = IMAGE_INFO_JSON.replace(app.config['UPLOAD_FOLDER'],
+                                                '').replace('/', '')
         try:
-            auth = oss2.StsAuth(FC_CONTEXT.access_key_id, FC_CONTEXT.access_key_secret, FC_CONTEXT.security_token)
-            bucket = oss2.Bucket(auth, "http://oss-{}-internal.aliyuncs.com".format(FC_CONTEXT.region), os.environ['OSS_BUCKET_NAME'])
+            auth = oss2.StsAuth(FC_CONTEXT.access_key_id,
+                                FC_CONTEXT.access_key_secret,
+                                FC_CONTEXT.security_token)
+            bucket = oss2.Bucket(
+                auth, "http://oss-{}-internal.aliyuncs.com".format(
+                    FC_CONTEXT.region), os.environ['OSS_BUCKET_NAME'])
             for obj in oss2.ObjectIterator(bucket):
                 if obj.key == json_info_key:
                     res = bucket.get_object(json_info_key)
                     image_info = json.loads(res.read().decode('utf-8'))
-                    print("init_image_info, from oss get: {0}".format(image_info))
+                    print("init_image_info, from oss get: {0}".format(
+                        image_info))
 
                     # merge local result
                     local_info = {}
@@ -79,21 +117,25 @@ def init_image_info():
                     for k, v in local_info.items():
                         if k not in image_info:
                             image_info[k] = v
-                        elif k in image_info and v.get('label', '') != 'unknown':
+                        elif k in image_info and v.get('label',
+                                                       '') != 'unknown':
                             image_info[k] = v
 
                     # initialize local image_info
                     with open(IMAGE_INFO_JSON, 'w') as f:
                         json.dump(image_info, f, indent=4)
-                else: # merge oss pic to local
-                    if "/" not in obj.key and obj.key.endswith('jpg','png','jpeg','bmp'):
-                        file_name = os.path.join(app.config['UPLOAD_FOLDER'], obj.key)
+                else:  # merge oss pic to local
+                    if "/" not in obj.key and allowed_file(obj.key):
+                        file_name = os.path.join(app.config['UPLOAD_FOLDER'],
+                                                 obj.key)
                         if not os.path.exists(file_name):
                             bucket.get_object_to_file(obj.key, file_name)
         except:
             # when there is no IMAGE_INFO_JSON on OSS
             # just initialize local file and upload later
-            print("init_image_info: there is no IMAGE_INFO_JSON on OSS, key = {}".format(json_info_key))
+            print(
+                "init_image_info: there is no IMAGE_INFO_JSON on OSS, key = {}"
+                .format(json_info_key))
         finally:
             INIT_IMAGE_INFO_DONE = True
 
@@ -109,13 +151,14 @@ def generate_gallery():
 
         if not os.path.exists(dst_path):
             copyfile(src_path, dst_path)
-            prob = predictor.predict(dst_path)
+            prob = predict(dst_path)
             save_image_info(file_name, prob)
 
     images, cur_accuracy, num_stored_images = get_stat_of_recent_images()
-    return render_template(
-        'index.html', images=images, cur_accuracy=cur_accuracy,
-        num_stored_images=num_stored_images)
+    return render_template('index.html',
+                           images=images,
+                           cur_accuracy=cur_accuracy,
+                           num_stored_images=num_stored_images)
 
 
 @app.route('/', methods=['GET', 'POST'])
@@ -139,14 +182,10 @@ def make_prediction():
 
             # save image for prediction and rendering
             file_path = save_image(file, filename)
-
-            # get prediction
-            prob = predictor.predict(file_path)
-            prob = float(prob) # turn ndarray to float
+            prob = predict(file_path)
 
             # save image info
             save_image_info(filename, prob)
-
 
             # keep record of current prediction for later rendering
             # after getting user feedback
@@ -154,25 +193,26 @@ def make_prediction():
             with open(CURRENT_IMAGE_INFO, 'w') as f:
                 json.dump(info, f, indent=4)
 
-
             # get information of gallery
-            images, cur_accuracy, num_stored_images = get_stat_of_recent_images()
+            images, cur_accuracy, num_stored_images = get_stat_of_recent_images(
+            )
 
-            return render_template(
-                    'index.html',
-                    cat_prob=float('{:.1f}'.format(prob * 100)),
-                    dog_prob=float('{:.1f}'.format((1 - prob) * 100)),
-                    cur_image_path=file_path,
-                    images=images,
-                    num_stored_images=num_stored_images,
-                    cur_accuracy=cur_accuracy,
-                    show_feedback=True)
+            return render_template('index.html',
+                                   cat_prob=float('{:.1f}'.format(prob * 100)),
+                                   dog_prob=float('{:.1f}'.format(
+                                       (1 - prob) * 100)),
+                                   cur_image_path=file_path,
+                                   images=images,
+                                   num_stored_images=num_stored_images,
+                                   cur_accuracy=cur_accuracy,
+                                   show_feedback=True)
 
     # get information of gallery when receive GET request
     images, cur_accuracy, num_stored_images = get_stat_of_recent_images()
-    return render_template(
-            'index.html', images=images, cur_accuracy=cur_accuracy,
-            num_stored_images=num_stored_images)
+    return render_template('index.html',
+                           images=images,
+                           cur_accuracy=cur_accuracy,
+                           num_stored_images=num_stored_images)
 
 
 @app.route('/feedback', methods=['POST'])
@@ -205,31 +245,30 @@ def save_user_feedback():
         if SAVE_INFO_ON_OSS:
             save_image_info_on_oss(image_info)
 
-
     # get information of gallery
     images, cur_accuracy, num_stored_images = get_stat_of_recent_images()
 
-
-    return render_template(
-            'index.html',
-            prob=float('{:.1f}'.format(prob * 100)) if prob else 0,
-            cur_image_path=uploaded_image_path(filename),
-            images=images,
-            num_stored_images=num_stored_images,
-            cur_accuracy=cur_accuracy,
-            show_thankyou=True)
+    return render_template('index.html',
+                           prob=float('{:.1f}'.format(prob *
+                                                      100)) if prob else 0,
+                           cur_image_path=uploaded_image_path(filename),
+                           images=images,
+                           num_stored_images=num_stored_images,
+                           cur_accuracy=cur_accuracy,
+                           show_thankyou=True)
 
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
     """generate url for user uploaded file"""
-    return send_from_directory(app.config['UPLOAD_FOLDER'],
-                               filename)
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
 
 @app.route('/initialize', methods=['POST'])
 def initialize():
     print("just initialize to import app.py and all dependency")
     return render_template('init.html')
+
 
 @app.errorhandler(404)
 def page_not_found(e):
@@ -272,7 +311,6 @@ def get_stat_of_recent_images(num_images=300):
 
     init_image_info()
 
-
     # get list of last modified images
     # exclude .json file and files start with .
     files = ['/'.join((folder, file)) \
@@ -282,10 +320,9 @@ def get_stat_of_recent_images(num_images=300):
     # list of tuples (file_path, timestamp)
     last_modified_files = [(file, os.path.getmtime(file)) for file in files]
     last_modified_files = sorted(last_modified_files,
-                            key=lambda t: t[1], reverse=True)
+                                 key=lambda t: t[1],
+                                 reverse=True)
     num_stored_images = len(last_modified_files)
-
-
 
     # read in image info
     with open(IMAGE_INFO_JSON, 'r') as f:
@@ -358,8 +395,13 @@ def save_image(file, filename):
     # save image to OSS
     if SAVE_INFO_ON_OSS:
         file.seek(0)
-        auth = oss2.StsAuth(FC_CONTEXT.access_key_id, FC_CONTEXT.access_key_secret, FC_CONTEXT.security_token)
-        bucket = oss2.Bucket(auth, "http://oss-{}-internal.aliyuncs.com".format(FC_CONTEXT.region), os.environ['OSS_BUCKET_NAME'])
+        auth = oss2.StsAuth(FC_CONTEXT.access_key_id,
+                            FC_CONTEXT.access_key_secret,
+                            FC_CONTEXT.security_token)
+        bucket = oss2.Bucket(
+            auth,
+            "http://oss-{}-internal.aliyuncs.com".format(FC_CONTEXT.region),
+            os.environ['OSS_BUCKET_NAME'])
         bucket.put_object(filename, file.read())
     return file_path
 
@@ -401,11 +443,16 @@ def save_image_info_on_oss(image_info):
     image_info: dict
     """
     update_fc_context()
-    auth = oss2.StsAuth(FC_CONTEXT.access_key_id, FC_CONTEXT.access_key_secret, FC_CONTEXT.security_token)
-    bucket = oss2.Bucket(auth, "http://oss-{}-internal.aliyuncs.com".format(FC_CONTEXT.region), os.environ['OSS_BUCKET_NAME'])
+    auth = oss2.StsAuth(FC_CONTEXT.access_key_id, FC_CONTEXT.access_key_secret,
+                        FC_CONTEXT.security_token)
+    bucket = oss2.Bucket(
+        auth, "http://oss-{}-internal.aliyuncs.com".format(FC_CONTEXT.region),
+        os.environ['OSS_BUCKET_NAME'])
     bucket.put_object(IMAGE_INFO_JSON\
         .replace(app.config['UPLOAD_FOLDER'], '').replace('/', ''), json.dumps(image_info, indent=4))
+
 
 if __name__ == '__main__':
     # application.run(host='0.0.0.0', port=5602)
     app.run(host='0.0.0.0', port=9000, debug=IS_DEBUG)
+    # predict('static/uploaded_images/10.jpg')

@@ -6065,6 +6065,12 @@
         "prob": 0.9698361158370972,
         "y_pred": 1
     },
+    "cat.jpg": {
+        "label": "cat",
+        "pred": "cat",
+        "prob": 0.9259551167488098,
+        "y_pred": 1
+    },
     "cat_wallpaper.jpg": {
         "label": "unknown",
         "pred": "cat",
@@ -6076,6 +6082,12 @@
         "pred": "cat",
         "prob": 0.9719846844673157,
         "y_pred": 1
+    },
+    "dog2.jpg": {
+        "label": "dog",
+        "pred": "dog",
+        "prob": 0.14425501227378845,
+        "y_pred": 0
     },
     "zoe-heart-cat-2.jpg": {
         "label": "unknown",
