@@ -22,7 +22,7 @@ Resources:
         MemorySize: 1536
         CodeUri: ./ # Root directory for the function or the Dockerfile path
         CustomContainerConfig:
-          Image: "registry-vpc.cn-hangzhou.aliyuncs.com/rsong/cat-recognition-app:v18"
+          Image: "registry-vpc.cn-hangzhou.aliyuncs.com/rsong/cat-recognition-app:v19"
           Command: ""
           Args: ""
         EnvironmentVariables:

@@ -1,6 +1,6 @@
 import time, os
 import tensorflow as tf
-from skimage import io
+from skimage import io, transform
 from scipy.misc import imresize
 import numpy as np
 
@@ -25,7 +25,12 @@ def predict(file_path):
     start = time.time()
     img_size = 64
     image = io.imread(file_path)
-    img = imresize(image, (img_size, img_size, 3))
+
+    if image.shape[2] == 4:  #ARGB
+        tmp = transform.resize(image, (img_size, img_size, 3))
+        img = imresize(tmp, (img_size, img_size, 3))
+    else:
+        img = imresize(image, (img_size, img_size, 3))
 
     X = np.zeros((1, 64, 64, 3), dtype='float64')
     X[0] = img

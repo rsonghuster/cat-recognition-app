@@ -13,48 +13,6 @@ from settings import UPLOAD_FOLDER, TEST_DIR, \
 from fc_context import FC_CONTEXT
 from predict import predict
 
-# start = time.time()
-# os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-# from keras.models import model_from_json
-# print("import keras time = ", time.time() - start)
-
-# model = None
-# # Getting model
-# with open('model/model.json', 'r') as f:
-#     model_content = f.read()
-#     model = model_from_json(model_content)
-#     # Getting weights
-#     model.load_weights("model/weights.h5")
-
-# graph = None
-# graph = tf.get_default_graph()
-
-# def predict(file_path):
-#     start = time.time()
-#     img_size = 64
-#     image = io.imread(file_path)
-#     img = imresize(image, (img_size, img_size, 3))
-
-#     X = np.zeros((1, 64, 64, 3), dtype='float64')
-#     X[0] = img
-
-#     global model, graph
-#     with graph.as_default():
-#         Y = model.predict(X)
-#         print("dog: {:.2}, cat: {:.2}; ".format(Y[0][1], Y[0][0]))
-#         return float(Y[0][0])
-
-# bucket = None
-# # Alibaba Cloud settings, ignore this part if test locally
-# try:
-#     from aliyun_settings import OSS_ENDPOINT, OSS_BUCKET_NAME, \
-#         OSS_ACCESS_KEY_ID, OSS_SECRET_ACCESS_KEY
-#     SAVE_INFO_ON_OSS = True
-#     auth = oss2.Auth(OSS_ACCESS_KEY_ID, OSS_SECRET_ACCESS_KEY)
-#     bucket = oss2.Bucket(auth, OSS_ENDPOINT, OSS_BUCKET_NAME)
-# except ImportError:
-#     SAVE_INFO_ON_OSS = False
-
 INIT_IMAGE_INFO_DONE = False
 
 app = Flask(__name__)
